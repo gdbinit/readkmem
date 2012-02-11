@@ -25,7 +25,6 @@
 /* Begin PBXFileReference section */
 		DE6BE12713CCB7D50032DA34 /* readkmem */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = readkmem; sourceTree = BUILT_PRODUCTS_DIR; };
 		DE6BE12B13CCB7D50032DA34 /* main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = main.c; sourceTree = "<group>"; };
-		DE6BE12D13CCB7D50032DA34 /* readkmem.1 */ = {isa = PBXFileReference; lastKnownFileType = text.man; path = readkmem.1; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -59,7 +58,6 @@
 			isa = PBXGroup;
 			children = (
 				DE6BE12B13CCB7D50032DA34 /* main.c */,
-				DE6BE12D13CCB7D50032DA34 /* readkmem.1 */,
 			);
 			path = readkmem;
 			sourceTree = "<group>";

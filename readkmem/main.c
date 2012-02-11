@@ -1,7 +1,9 @@
 /*
  * Readkmem
  *
- * fG! - 2011 - reverser@put.as - http://reverse.put.as
+ * A small util to dump kernel memory
+ *
+ * fG! - 2012 - reverser@put.as - http://reverse.put.as
  *
  * Note: This requires kmem/mem devices to be enabled
  * Edit /Library/Preferences/SystemConfiguration/com.apple.Boot.plist
@@ -13,8 +15,10 @@
  * v0.1 - Initial version
  * v0.2 - Some fixes
  * v0.3 - More improvements, more useful now!
+ * v0.4 - Code cleanups
  *
  */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -28,21 +32,17 @@
 #include <ctype.h>
 
 #define DEBUG 1
-#define VERSION "0.3"
+#define VERSION "0.4"
 
 #define x86 0
 #define x64	1
 
-#define MAX_SIZE 500000
-
-/***********GLOBAL**************/
-int fd_kmem;
-unsigned long ptr_idt;
-uint16_t size_idt;
-int8_t kernel_type;
-/******************************/
+#define MAX_SIZE 50000000
 
 void header(void);
+int8_t get_kernel_type (void);
+void readkmem(uint32_t fd, void *m, off_t off, uint64_t size);
+void usage(void);
 
 // retrieve which kernel type are we running, 32 or 64 bits
 int8_t get_kernel_type (void)
@@ -59,30 +59,16 @@ int8_t get_kernel_type (void)
 		return -1;
 }
 
-void readkmem(void *m,off_t off,uint64_t size)
+void readkmem(uint32_t fd, void *m, off_t off, uint64_t size)
 {
-	if(lseek(fd_kmem,off,SEEK_SET) != off)
+	if(lseek(fd, off, SEEK_SET) != off)
 	{
 		fprintf(stderr,"[ERROR] Error in lseek. Are you root? \n");
 		exit(-1);
 	}
-	if(read(fd_kmem,m,size) != size)
+	if(read(fd, m, size) != size)
 	{
 		fprintf(stderr,"[ERROR] Error while trying to read from kmem\n");
-		exit(-1);
-	}
-}
-
-void writekmem(void *m,off_t off,uint64_t size)
-{
-	if(lseek(fd_kmem,off,SEEK_SET) != off)
-	{
-		fprintf(stderr,"[ERROR] Error in lseek. Are you root? \n");
-		exit(-1);
-	}
-	if(write(fd_kmem,m,size) != size)
-	{
-		fprintf(stderr,"[ERROR] Error while trying to write to kmem\n");
 		exit(-1);
 	}
 }
@@ -111,10 +97,12 @@ int main(int argc, char ** argv)
 		{ "out", required_argument, NULL, 'o' },
 		{ NULL, 0, NULL, 0 }
 	};
-	int option_index = 0, c;
-	char *outputname=NULL;
+	int option_index = 0;
+    int c = 0;
+	char *outputname = NULL;
 	
-	uint64_t address=0, size=0;
+	uint64_t address = 0;
+    uint64_t size = 0;
 	
 	// process command line options
 	while ((c = getopt_long (argc, argv, "a:s:o:", long_options, &option_index)) != -1)
@@ -158,14 +146,16 @@ int main(int argc, char ** argv)
 		exit(1);
 	}
 	
-	kernel_type = get_kernel_type();
+	int8_t kernel_type = get_kernel_type();
 	if (kernel_type == -1)
 	{
 		printf("[ERROR] Unable to retrieve kernel type!\n");
 		exit(1);
 	}
 	
-	if(!(fd_kmem=open("/dev/kmem",O_RDWR)))
+    int32_t fd_kmem;
+    
+	if(!(fd_kmem = open("/dev/kmem",O_RDWR)))
 	{
 		fprintf(stderr,"[ERROR] Error while opening /dev/kmem. Is /dev/kmem enabled?\n");
 		fprintf(stderr,"Add parameter kmem=1 to /Library/Preferences/SystemConfiguration/com.apple.Boot.plist\n");
@@ -177,17 +167,17 @@ int main(int argc, char ** argv)
         printf("[ERROR] Invalid size (higher than maximum!)\n");
         exit(1);
     }
-    unsigned char *read = malloc(size);
+    
+    uint8_t *read = malloc(size);
 	if (read == NULL)
     {
         printf("[ERROR] Memory allocation failed!\n");
         exit(1);
     }
-	
-	FILE *outputfile;
+    
+	FILE *outputfile;	
 	if (outputname != NULL)
 	{
-		
 		if ( (outputfile = fopen(outputname, "wb")) == NULL)
 		{
 			fprintf(stderr,"[ERROR] Cannot open %s for output!\n", outputname);
@@ -196,8 +186,9 @@ int main(int argc, char ** argv)
 	}
 	
 	// read kernel memory
-    readkmem(read, address, size);
+    readkmem(fd_kmem, read, address, size);
 	
+    // dump to file
 	if (outputname != NULL)
 	{
 		if (fwrite(read, size, 1, outputfile) < 1)
@@ -207,14 +198,17 @@ int main(int argc, char ** argv)
 		}
 		printf("\n[OK] Memory dumped to %s!\n\n", outputname);
 	}
+    // dump to stdout
 	else
 	{
-		int i=0,x,z;
+		int i = 0;
+        int x = 0;
+        int z = 0;
 		printf("Memory hex dump @ %p:\n\n", (void*)address);
 		// 16 columns
-		while (i<size)
+		while (i < size)
 		{
-			printf("%08lx ",address);
+			printf("%p ",(void*)address);
 			z = i;
 			for (x = 0; x < 16; x++)
 			{
@@ -226,13 +220,12 @@ int main(int argc, char ** argv)
 				printf("%c", isascii(read[z]) && isprint(read[z]) ? read[z] : '.');
 				z++;
 			}
-			i+=16;
+			i += 16;
 			printf("\n");
 			address += 16;
 		}
 		printf("\n");		
 	}
-
     free(read);
 	return 0;
 }
