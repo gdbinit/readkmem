@@ -31,6 +31,8 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <mach-o/loader.h>
+#include <stddef.h>
+#include <assert.h>
 
 #define DEBUG 1
 #define VERSION "0.4"
@@ -48,6 +50,69 @@ void readkmem(uint32_t fd, void *buffer, off_t off, uint64_t size);
 void usage(void);
 static mach_vm_address_t get_image_size(uint32_t fd, off_t address);
 static void dump_binary(uint32_t fd, off_t address, void *buffer);
+
+/* memzero function by:
+ * Copyright 2012, Mansour Moufid <mansourmoufid@gmail.com>
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THIS SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+void *memzero(void *, size_t);
+void *memzero(void *mem, size_t n)
+{
+    size_t i, j;
+    unsigned long long *q;
+    unsigned long long qzero = 0ULL;
+    unsigned char *b;
+    unsigned char bzero = 0U;
+    
+    assert(mem != NULL);
+    assert(n > 0);
+    
+    i = 0;
+    
+    b = mem;
+    while ((size_t) b % sizeof(qzero) != 0) {
+        *b = bzero;
+        b++;
+        i++;
+        if (i >= n) {
+            return mem;
+        }
+    }
+    
+    if (n-i >= sizeof(qzero)) {
+        q = mem;
+        q += i;
+        q[0] = qzero;
+        for (j = 1; j < (n-i)/sizeof(qzero); j++) {
+            q[j] = q[j-1];
+        }
+        i += j*sizeof(qzero);
+    }
+    
+    if (i >= n) {
+        return mem;
+    }
+    
+    b = mem;
+    b += i;
+    b[0] = bzero;
+    for (j = 1; j < n-i; j++) {
+        b[j] = b[j-1];
+    }
+    
+    return mem;
+}
 
 /*
  * we need to find the binary file size
@@ -108,9 +173,6 @@ get_image_size(uint32_t fd, off_t address)
                 {
                     vmaddr_slide = address - segCmd->vmaddr;
                 }
-                //#if DEBUG
-                //                printf("[DEBUG] %s %x\n", segCmd->segname, segCmd->filesize);
-                //#endif
                 imagefilesize += segCmd->filesize;
             }
         }
@@ -129,6 +191,7 @@ get_image_size(uint32_t fd, off_t address)
         // advance to next command
         loadCmdAddress += loadCommand->cmdsize;
     }
+end:
     free(loadcmds);
     return imagefilesize;
 }
@@ -175,7 +238,6 @@ dump_binary(uint32_t fd, off_t address, void *buffer)
     struct segment_command *segCmd      = NULL;
     struct segment_command_64 *segCmd64 = NULL;
     // process commands to find the info we need
-    
     for (uint32_t i = 0; i < header.ncmds; i++)
     {
         loadCommand = (struct load_command*)loadCmdAddress;
@@ -189,9 +251,12 @@ dump_binary(uint32_t fd, off_t address, void *buffer)
 #if DEBUG
                 printf("[DEBUG] Dumping %s at 0x%llx with size 0x%x (buffer:%x)\n", segCmd->segname, segCmd->vmaddr+vmaddr_slide, segCmd->filesize, (uint32_t)buffer);
 #endif
+                // sync buffer position with file offset
+                buffer += segCmd->fileoff;
+                // we don't need to dump header plus load cmds because __TEXT segment address includes them!
                 readkmem(fd, buffer, segCmd->vmaddr+vmaddr_slide, segCmd->filesize);
             }
-            buffer += segCmd->filesize;
+            
         }
         else if (loadCommand->cmd == LC_SEGMENT_64)
         {
@@ -201,13 +266,16 @@ dump_binary(uint32_t fd, off_t address, void *buffer)
 #if DEBUG
                 printf("[DEBUG] Dumping %s at 0x%llx with size 0x%llx (buffer:%p)\n", segCmd64->segname, segCmd64->vmaddr+vmaddr_slide, segCmd64->filesize, buffer);
 #endif
+                // sync buffer position with file offset
+                buffer += segCmd64->fileoff;
+                // we don't need to dump header plus load cmds because __TEXT segment address includes them!
                 readkmem(fd, buffer, segCmd64->vmaddr+vmaddr_slide, segCmd64->filesize);
             }
-            buffer += segCmd64->filesize;
         }
         // advance to next command
         loadCmdAddress += loadCommand->cmdsize;
     }
+end:
     free(loadcmds);
 }
 
@@ -247,8 +315,8 @@ usage(void)
 {
 	fprintf(stderr,"readkmem -a address -s size [-o filename] [-f]\n");
 	fprintf(stderr,"Available Options : \n");
-	fprintf(stderr,"       -o filename  file to write binary output to\n");
-    fprintf(stderr,"       -f           make a full dump of target binary\n");
+	fprintf(stderr," -o filename  file to write binary output to\n");
+    fprintf(stderr," -f           make a full dump of target binary\n");
 	exit(1);
 }
 
@@ -350,12 +418,7 @@ int main(int argc, char ** argv)
         exit(1);
     }
     
-    uint8_t *read_buffer = malloc(size);
-	if (read_buffer == NULL)
-    {
-        printf("[ERROR] Memory allocation failed!\n");
-        exit(1);
-    }
+    uint8_t *read_buffer = NULL;
     
 	FILE *outputfile;	
 	if (outputname != NULL)
@@ -374,6 +437,8 @@ int main(int argc, char ** argv)
         imagesize = get_image_size(fd_kmem, address);
         // reallocate the buffer since size argument is not used
         read_buffer = malloc((long)imagesize * sizeof(uint8_t));
+        // cleanup buffer
+        memzero(read_buffer, imagesize);
         // and finally read the sections and dump their contents to the buffer
         dump_binary(fd_kmem, address, (void*)read_buffer);
         // dump buffer contents to file
@@ -389,6 +454,13 @@ int main(int argc, char ** argv)
     }
     else
     {
+        read_buffer = malloc(size);
+        if (read_buffer == NULL)
+        {
+            printf("[ERROR] Memory allocation failed!\n");
+            exit(1);
+        }
+        memzero(read_buffer, size);
         // read kernel memory
         readkmem(fd_kmem, read_buffer, address, size);
         
@@ -414,15 +486,14 @@ int main(int argc, char ** argv)
             {
                 printf("%p ",(void*)address);
                 z = i;
-                for (x = 0; x < 16; x++)
+                for (x = 0; x < 16; x++, z++)
                 {
-                    printf("%02x ", read_buffer[z++]);
+                    printf("%02x ", read_buffer[z]);
                 }
                 z = i;
-                for (x = 0; x < 16; x++)
+                for (x = 0; x < 16; x++, z++)
                 {
                     printf("%c", isascii(read_buffer[z]) && isprint(read_buffer[z]) ? read_buffer[z] : '.');
-                    z++;
                 }
                 i += 16;
                 printf("\n");
