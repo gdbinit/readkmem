@@ -37,7 +37,7 @@
 #define x86 0
 #define x64	1
 
-#define MAX_SIZE 50000000
+#define MAX_SIZE 500000
 
 void header(void);
 int8_t get_kernel_type (void);
@@ -155,7 +155,7 @@ int main(int argc, char ** argv)
 	
     int32_t fd_kmem;
     
-	if(!(fd_kmem = open("/dev/kmem",O_RDWR)))
+	if((fd_kmem = open("/dev/kmem",O_RDWR)) == -1)
 	{
 		fprintf(stderr,"[ERROR] Error while opening /dev/kmem. Is /dev/kmem enabled?\n");
 		fprintf(stderr,"Add parameter kmem=1 to /Library/Preferences/SystemConfiguration/com.apple.Boot.plist\n");

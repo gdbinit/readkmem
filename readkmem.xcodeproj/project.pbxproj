@@ -87,6 +87,9 @@
 /* Begin PBXProject section */
 		DE6BE11E13CCB7D50032DA34 /* Project object */ = {
 			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 0420;
+			};
 			buildConfigurationList = DE6BE12113CCB7D50032DA34 /* Build configuration list for PBXProject "readkmem" */;
 			compatibilityVersion = "Xcode 3.2";
 			developmentRegion = English;
