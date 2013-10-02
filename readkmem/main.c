@@ -1,9 +1,17 @@
 /*
+ *     _____                                _____
+ *  __|__   |__  ______  ____    _____   __| __  |__  ____    __  ______  ____    __
+ * |     |     ||   ___||    \  |     \ |  |/ /     ||    \  /  ||   ___||    \  /  |
+ * |     \     ||   ___||     \ |      \|     \     ||     \/   ||   ___||     \/   |
+ * |__|\__\  __||______||__|\__\|______/|__|\__\  __||__/\__/|__||______||__/\__/|__|
+ *    |_____|                              |_____|
+ *
  * Readkmem
  *
- * A small util to dump kernel memory
+ * A small util to dump kernel memory and kernel binaries
  *
- * fG! - 2012 - reverser@put.as - http://reverse.put.as
+ * Copyright (c) fG! - 2012,2013. All rights reserved.
+ * reverser@put.as - http://reverse.put.as
  *
  * Note: This requires kmem/mem devices to be enabled
  * Edit /Library/Preferences/SystemConfiguration/com.apple.Boot.plist
@@ -16,6 +24,30 @@
  * v0.2 - Some fixes
  * v0.3 - More improvements, more useful now!
  * v0.4 - Code cleanups
+ * v0.5 - Add feature to dump mach-o binaries from kernel space
+ *        Code cleanups
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ * notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ * notice, this list of conditions and the following disclaimer in the
+ * documentation and/or other materials provided with the distribution.
+ * 3. The name of the author may not be used to endorse or promote products
+ * derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
 
@@ -34,85 +66,19 @@
 #include <stddef.h>
 #include <assert.h>
 
-#define DEBUG 1
-#define VERSION "0.4"
+#define VERSION "0.5"
 
 #define x86 0
 #define x64	1
-
-#define MAX_SIZE 500000
 
 mach_vm_address_t vmaddr_slide = 0;
 
 void header(void);
 int8_t get_kernel_type (void);
-void readkmem(uint32_t fd, void *buffer, off_t off, uint64_t size);
+void readkmem(uint32_t fd, void *buffer, off_t off, size_t size);
 void usage(void);
-static mach_vm_address_t get_image_size(uint32_t fd, off_t address);
+static size_t get_image_size(uint32_t fd, off_t address);
 static void dump_binary(uint32_t fd, off_t address, void *buffer);
-
-/* memzero function by:
- * Copyright 2012, Mansour Moufid <mansourmoufid@gmail.com>
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
- * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
-void *memzero(void *, size_t);
-void *memzero(void *mem, size_t n)
-{
-    size_t i, j;
-    unsigned long long *q;
-    unsigned long long qzero = 0ULL;
-    unsigned char *b;
-    unsigned char bzero = 0U;
-    
-    assert(mem != NULL);
-    assert(n > 0);
-    
-    i = 0;
-    
-    b = mem;
-    while ((size_t) b % sizeof(qzero) != 0) {
-        *b = bzero;
-        b++;
-        i++;
-        if (i >= n) {
-            return mem;
-        }
-    }
-    
-    if (n-i >= sizeof(qzero)) {
-        q = mem;
-        q += i;
-        q[0] = qzero;
-        for (j = 1; j < (n-i)/sizeof(qzero); j++) {
-            q[j] = q[j-1];
-        }
-        i += j*sizeof(qzero);
-    }
-    
-    if (i >= n) {
-        return mem;
-    }
-    
-    b = mem;
-    b += i;
-    b[0] = bzero;
-    for (j = 1; j < n-i; j++) {
-        b[j] = b[j-1];
-    }
-    
-    return mem;
-}
 
 /*
  * we need to find the binary file size
@@ -121,7 +87,7 @@ void *memzero(void *mem, size_t n)
  * if we dump using vmaddresses, we will get the alignment space into the dumped
  * binary and get into problems :-)
  */
-static mach_vm_address_t
+static size_t
 get_image_size(uint32_t fd, off_t address)
 {
 #if DEBUG
@@ -139,7 +105,7 @@ get_image_size(uint32_t fd, off_t address)
         exit(1);
     }
     
-    mach_vm_address_t imagefilesize = 0;
+    size_t imagefilesize = 0;
     
     // read the load commands
     uint8_t *loadcmds = malloc(header.sizeofcmds*sizeof(uint8_t));
@@ -296,7 +262,7 @@ get_kernel_type (void)
 }
 
 void
-readkmem(uint32_t fd, void *buffer, off_t off, uint64_t size)
+readkmem(uint32_t fd, void *buffer, off_t off, size_t size)
 {
 	if(lseek(fd, off, SEEK_SET) != off)
 	{
@@ -306,7 +272,7 @@ readkmem(uint32_t fd, void *buffer, off_t off, uint64_t size)
     ssize_t bytes_read = read(fd, buffer, size);
 	if(bytes_read != size)
 	{
-        fprintf(stderr,"[ERROR] Error while trying to read from kmem. Asked %lld bytes from offset %llx, returned %ld.\n", size, off, bytes_read);
+        fprintf(stderr,"[ERROR] Error while trying to read from kmem. Asked %ld bytes from offset %llx, returned %ld.\n", size, off, bytes_read);
 	}
 }
 
@@ -348,7 +314,7 @@ int main(int argc, char ** argv)
 	char *outputname = NULL;
 	
 	uint64_t address = 0;
-    uint64_t size = 0;
+    size_t size = 0;
     uint8_t  fulldump = 0;
 	
 	// process command line options
@@ -411,13 +377,7 @@ int main(int argc, char ** argv)
 		fprintf(stderr,"Add parameter kmem=1 to /Library/Preferences/SystemConfiguration/com.apple.Boot.plist\n");
 		exit(1);
 	}
-	
-    if (size > MAX_SIZE)
-    {
-        printf("[ERROR] Invalid size (higher than maximum!)\n");
-        exit(1);
-    }
-    
+	    
     uint8_t *read_buffer = NULL;
     
 	FILE *outputfile;	
@@ -433,12 +393,12 @@ int main(int argc, char ** argv)
     if (fulldump)
     {
         // first we need to find the file size because memory alignment slack spaces
-        mach_vm_address_t imagesize = 0;
+        size_t imagesize = 0;
         imagesize = get_image_size(fd_kmem, address);
-        // reallocate the buffer since size argument is not used
-        read_buffer = malloc((long)imagesize * sizeof(uint8_t));
-        // cleanup buffer
-        memzero(read_buffer, imagesize);
+#if DEBUG
+        printf("[DEBUG] Target image size is 0x%lx\n", imagesize);
+#endif
+        read_buffer = calloc(1, imagesize);
         // and finally read the sections and dump their contents to the buffer
         dump_binary(fd_kmem, address, (void*)read_buffer);
         // dump buffer contents to file
@@ -454,20 +414,18 @@ int main(int argc, char ** argv)
     }
     else
     {
-        read_buffer = malloc(size);
+        read_buffer = calloc(1, size);
         if (read_buffer == NULL)
         {
             printf("[ERROR] Memory allocation failed!\n");
             exit(1);
         }
-        memzero(read_buffer, size);
         // read kernel memory
         readkmem(fd_kmem, read_buffer, address, size);
-        
         // dump to file
         if (outputname != NULL)
         {
-            if (fwrite(read, size, 1, outputfile) < 1)
+            if (fwrite(read_buffer, size, 1, outputfile) < 1)
             {
                 fprintf(stderr,"[ERROR] Write error at %s occurred!\n", outputname);
                 exit(1);
@@ -480,23 +438,31 @@ int main(int argc, char ** argv)
             int i = 0;
             int x = 0;
             int z = 0;
+            size_t linelength = 0;
             printf("Memory hex dump @ %p:\n\n", (void*)address);
             // 16 columns
             while (i < size)
             {
+                linelength = (size - i) <= 16 ? (size - i) : 16;
                 printf("%p ",(void*)address);
                 z = i;
-                for (x = 0; x < 16; x++, z++)
+                for (x = 0; x < linelength; x++, z++)
                 {
                     printf("%02x ", read_buffer[z]);
                 }
+                // make it always 16 columns, this could be prettier :P
+                for (x = (int)linelength; x < 16; x++)
+                {
+                    fprintf(stdout, "   ");
+                }
                 z = i;
-                for (x = 0; x < 16; x++, z++)
+                printf("|");
+                for (x = 0; x < linelength; x++, z++)
                 {
                     printf("%c", isascii(read_buffer[z]) && isprint(read_buffer[z]) ? read_buffer[z] : '.');
                 }
                 i += 16;
-                printf("\n");
+                printf("|\n");
                 address += 16;
             }
             printf("\n");		
