@@ -10,7 +10,7 @@
  *
  * A small util to dump kernel memory and kernel binaries
  *
- * Copyright (c) fG! - 2012,2013. All rights reserved.
+ * Copyright (c) fG! - 2012, 2013, 2014. All rights reserved.
  * reverser@put.as - http://reverse.put.as
  *
  * Note: This requires kmem/mem devices to be enabled if processor_set_tasks() vuln not available

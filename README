@@ -1,0 +1,16 @@
+     _____                                _____
+  __|__   |__  ______  ____    _____   __| __  |__  ____    __  ______  ____    __
+ |     |     ||   ___||    \  |     \ |  |/ /     ||    \  /  ||   ___||    \  /  |
+ |     \     ||   ___||     \ |      \|     \     ||     \/   ||   ___||     \/   |
+ |__|\__\  __||______||__|\__\|______/|__|\__\  __||__/\__/|__||______||__/\__/|__|
+    |_____|                              |_____|
+
+Readkmem
+
+A small util to dump kernel memory and kernel binaries
+
+Uses processor_set_tasks() vulnerability or /dev/kmem to 
+read kernel memory.
+
+Copyright (c) fG! - 2012,2013, 2014. All rights reserved.
+reverser@put.as - http://reverse.put.as
