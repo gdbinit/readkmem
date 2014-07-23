@@ -91,7 +91,7 @@ struct mem_source
 mach_vm_address_t vmaddr_slide = 0;
 
 void header(void);
-int8_t get_kernel_type (void);
+int get_kernel_type(void);
 void readkmem(void *buffer, mach_vm_address_t target_addr, size_t size);
 void usage(void);
 static size_t get_image_size(mach_vm_address_t address);
@@ -279,8 +279,8 @@ end:
 }
 
 // retrieve which kernel type are we running, 32 or 64 bits
-int8_t
-get_kernel_type (void)
+int
+get_kernel_type(void)
 {
 	size_t size;
 	if (sysctlbyname("hw.machine", NULL, &size, NULL, 0))
@@ -301,18 +301,18 @@ get_kernel_type (void)
         exit(-1);
     }
     
+    int8_t ret = -1;
 	if (strcmp(machine, "i386") == 0)
     {
-		return x86;
+		ret = x86;
     }
 	else if (strcmp(machine, "x86_64") == 0)
     {
-		return x64;
+        ret = x64;
     }
-	else
-    {
-		return -1;
-    }
+    
+    free(machine);
+    return ret;
 }
 
 void
@@ -431,7 +431,13 @@ int main(int argc, char ** argv)
 		exit(-1);
 	}
 	
-	int8_t kernel_type = get_kernel_type();
+    if (size == 0)
+    {
+        ERROR_MSG("Size is zero!");
+        exit(-1);
+    }
+    
+	int kernel_type = get_kernel_type();
 	if (kernel_type == -1)
 	{
 		ERROR_MSG("Unable to retrieve kernel type!");
@@ -492,6 +498,11 @@ int main(int argc, char ** argv)
         // first we need to find the file size because memory alignment slack spaces
         size_t imagesize = 0;
         imagesize = get_image_size(address);
+        if (imagesize == 0)
+        {
+            ERROR_MSG("Invalid size!");
+            exit(-1);
+        }
         DEBUG_MSG("Target image size is 0x%lx", imagesize);
         read_buffer = calloc(1, imagesize);
         // and finally read the sections and dump their contents to the buffer
